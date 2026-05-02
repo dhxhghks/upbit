@@ -48,6 +48,27 @@ class Config:
     state_file: Path
 
 
+def load_env_file(path: Path = Path(".env")) -> None:
+    if not path.exists():
+        return
+
+    with path.open("r", encoding="utf-8") as file:
+        for raw_line in file:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            name, value = line.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if not name or name in os.environ:
+                continue
+
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            os.environ[name] = value
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -72,6 +93,7 @@ def env_decimal(name: str, default: str) -> Decimal:
 
 
 def load_config() -> Config:
+    load_env_file()
     return Config(
         access_key=os.environ.get("UPBIT_ACCESS_KEY", ""),
         secret_key=os.environ.get("UPBIT_SECRET_KEY", ""),

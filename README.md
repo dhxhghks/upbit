@@ -8,7 +8,8 @@ This is engineering sample code, not financial advice. Real-money trading can lo
 
 - `get_btc_price.py`: public KRW-BTC ticker sample.
 - `simple_auto_trader.py`: one-shot or loop trading bot.
-- `.env.example`: environment variables to configure the bot.
+- `coin_status_web.py`: local browser dashboard for market, strategy, and balance monitoring.
+- `.env`: environment variables to configure the bot.
 
 ## Strategy
 
@@ -22,18 +23,15 @@ The bot stores the last signal in `STATE_FILE` so a loop does not send the same 
 
 ## Setup
 
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and set your API keys only when you need `test` or `live` mode.
-
-Load the environment:
+Put your local settings in `.env`. The scripts load this file automatically and
+exported shell variables override matching `.env` values.
 
 ```bash
-set -a
-. ./.env
-set +a
+UPBIT_ACCESS_KEY=
+UPBIT_SECRET_KEY=
+TRADING_MODE=paper
+MARKET=KRW-BTC
+WATCHLIST=KRW-BTC,KRW-ETH,KRW-XRP
 ```
 
 ## Run Paper Mode
@@ -49,6 +47,19 @@ Loop mode:
 ```bash
 python3 simple_auto_trader.py --loop --interval 300
 ```
+
+## Run Coin Status Web App
+
+The web app shows public market status without API keys. If `UPBIT_ACCESS_KEY` and
+`UPBIT_SECRET_KEY` are present in `.env`, it also shows account balances.
+
+```bash
+python3 coin_status_web.py --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000` in your browser. The watchlist page is available
+at `http://127.0.0.1:8000/watchlist` and uses the comma-separated `WATCHLIST`
+setting from `.env`.
 
 ## Run Order Test Mode
 
