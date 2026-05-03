@@ -32,6 +32,8 @@ UPBIT_SECRET_KEY=
 TRADING_MODE=paper
 MARKET=KRW-BTC
 WATCHLIST=KRW-BTC,KRW-ETH,KRW-XRP
+MOMENTUM_SURGE_PCT=1.2
+MOMENTUM_VOLUME_MULTIPLIER=2.0
 ```
 
 ## Run Paper Mode
@@ -60,6 +62,13 @@ python3 coin_status_web.py --host 127.0.0.1 --port 8000
 Open `http://127.0.0.1:8000` in your browser. The watchlist page is available
 at `http://127.0.0.1:8000/watchlist` and uses the comma-separated `WATCHLIST`
 setting from `.env`.
+
+The trading control page is available at `http://127.0.0.1:8000/trading`.
+It lets you select a watchlist market, the SMA strategy, paper/test/live mode,
+and run one cycle or start a repeated loop. Live mode still requires
+`ALLOW_LIVE_TRADING=true` in `.env` and exact market confirmation in the page.
+The aggressive watchlist momentum strategy scans every `WATCHLIST` market and
+looks for simultaneous price surge and volume spike conditions.
 
 ## Run Order Test Mode
 

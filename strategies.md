@@ -1,7 +1,7 @@
 # Strategies
 
-This project currently has one simple moving-average strategy. It is intentionally
-basic and is meant as a monitored starting point, not financial advice.
+This project currently has two simple strategies. They are intentionally basic
+and meant as monitored starting points, not financial advice.
 
 ## Simple SMA Crossover
 
@@ -76,3 +76,43 @@ Live mode is blocked unless all of these are true:
 This strategy reacts only to a short SMA and long SMA relationship. It does not
 consider volatility, fees, slippage, order book depth, trend strength, stop loss,
 or broader market conditions.
+
+## Watchlist Momentum Spike
+
+This is a more aggressive watchlist-scanning strategy. Instead of monitoring
+only one selected market, it scans every market in `WATCHLIST`.
+
+For each watchlist market, it fetches recent minute candles and calculates:
+
+- Recent price change: newest close compared to the previous close
+- Five-candle price change: newest close compared to five candles ago
+- Current candle volume: newest candle `candle_acc_trade_price`
+- Baseline volume: average `candle_acc_trade_price` over the previous five candles
+- Volume multiplier: current candle volume divided by baseline volume
+
+The current defaults are:
+
+- `MOMENTUM_SURGE_PCT=1.2`
+- `MOMENTUM_VOLUME_MULTIPLIER=2.0`
+
+## Momentum Signal Rules
+
+For each cycle, the strategy ranks watchlist markets by a simple momentum score:
+
+```text
+score = recent_change_pct + five_candle_change_pct + volume_multiplier
+```
+
+It chooses the highest-scoring market and applies these rules:
+
+- `buy`: recent price change is at least `MOMENTUM_SURGE_PCT` and volume
+  multiplier is at least `MOMENTUM_VOLUME_MULTIPLIER`
+- `sell`: top-ranked market's recent price change is negative
+- `hold`: no top-ranked market meets the buy or sell rule
+
+## Momentum Risk
+
+This strategy is intentionally aggressive. It can buy into short-lived spikes,
+false breakouts, and thin markets. It does not yet include stop loss, take
+profit, spread checks, order book depth checks, cooldowns, or portfolio exposure
+limits.
