@@ -116,3 +116,19 @@ This strategy is intentionally aggressive. It can buy into short-lived spikes,
 false breakouts, and thin markets. It does not yet include stop loss, take
 profit, spread checks, order book depth checks, cooldowns, or portfolio exposure
 limits.
+
+## Top Volume Momentum
+
+This strategy dynamically monitors the five KRW markets with the highest
+24-hour accumulated trade value.
+
+Each cycle:
+
+- Fetch all Upbit KRW markets.
+- Fetch tickers for those markets.
+- Rank markets by `acc_trade_price_24h`.
+- Monitor only the top five markets with the same momentum rules used by
+  Watchlist Momentum Spike.
+
+The selected signal includes the selected market, signal price, decision reason,
+and the top-volume market list used for that cycle.

@@ -69,6 +69,9 @@ and run one cycle or start a repeated loop. Live mode still requires
 `ALLOW_LIVE_TRADING=true` in `.env` and exact market confirmation in the page.
 The aggressive watchlist momentum strategy scans every `WATCHLIST` market and
 looks for simultaneous price surge and volume spike conditions.
+The top volume momentum strategy fetches all KRW markets, ranks them by
+24-hour accumulated trade value, and monitors the top five with the same
+momentum rules.
 
 ## Run Order Test Mode
 

@@ -13,6 +13,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -29,6 +30,9 @@ from simple_auto_trader import (
 )
 
 DEFAULT_WATCHLIST = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"]
+DEFAULT_TRADING_LOG_FILE = Path("state/trading_runs.jsonl")
+TOP_VOLUME_LIMIT = 5
+SUPPORTED_TRADING_STRATEGIES = {"simple_sma", "watchlist_momentum", "top_volume_momentum"}
 TRADING_LOCK = threading.Lock()
 TRADING_STOP = threading.Event()
 TRADING_THREAD: threading.Thread | None = None
@@ -217,6 +221,7 @@ HTML = """<!doctype html>
       <div class="metric">
         <div class="label">Strategy Signal</div>
         <div class="value" id="signal">-</div>
+        <div class="label" id="signal-detail">-</div>
       </div>
       <div class="metric">
         <div class="label">Candle Unit</div>
@@ -305,6 +310,7 @@ HTML = """<!doctype html>
         const signal = document.getElementById("signal");
         signal.textContent = data.strategy.signal.toUpperCase();
         signal.className = `value ${signalClass(data.strategy.signal)}`;
+        setText("signal-detail", `${fmtKrw.format(data.strategy.signal_price)} · ${data.strategy.reason}`);
 
         setText("candle-unit", `${data.config.candle_unit} min`);
         setText("short-sma", fmtKrw.format(data.strategy.short_sma));
@@ -622,6 +628,11 @@ TRADING_HTML = """<!doctype html>
     }
     .form-panel { grid-column: span 5; }
     .result-panel { grid-column: span 7; }
+    .result-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
     label {
       display: block;
       color: var(--muted);
@@ -662,20 +673,136 @@ TRADING_HTML = """<!doctype html>
     }
     button:hover { border-color: var(--blue); }
     button.danger { background: #3b2424; }
+    .status-bar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .status {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 10px;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .badge.active {
+      border-color: var(--green);
+      color: var(--green);
+    }
+    .badge.error {
+      border-color: var(--red);
+      color: var(--red);
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .summary-card {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 0;
+      min-height: 82px;
+    }
+    .summary-card .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .summary-card .value {
+      font-size: 20px;
+      line-height: 1.2;
+      overflow-wrap: anywhere;
+    }
+    .section-title {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 9px 7px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      white-space: nowrap;
+    }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    tr:last-child td { border-bottom: 0; }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .empty {
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      line-height: 1.45;
+    }
+    .history-panel {
+      grid-column: span 12;
+    }
+    .history-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .history-header button {
+      width: auto;
+      min-width: 92px;
+    }
+    .history-table td, .history-table th {
+      font-size: 13px;
+    }
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    summary {
+      cursor: pointer;
+      color: var(--muted);
+      background: var(--panel-2);
+      padding: 10px 12px;
+      font-size: 13px;
+    }
     pre {
-      min-height: 360px;
       margin: 0;
+      max-height: 320px;
       overflow: auto;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       color: var(--text);
       font-size: 13px;
       line-height: 1.45;
-    }
-    .status {
-      color: var(--muted);
-      margin-bottom: 12px;
-      font-size: 14px;
+      padding: 12px;
     }
     .positive { color: var(--green); }
     .negative { color: var(--red); }
@@ -686,6 +813,10 @@ TRADING_HTML = """<!doctype html>
       h1 { font-size: 23px; }
       .form-panel, .result-panel { grid-column: span 12; }
       .actions, .row { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: 1fr; }
+      .status-bar { grid-template-columns: 1fr; }
+      .history-header { align-items: stretch; flex-direction: column; }
+      .history-header button { width: 100%; }
     }
   </style>
 </head>
@@ -714,6 +845,7 @@ TRADING_HTML = """<!doctype html>
           <select id="strategy" name="strategy">
             <option value="simple_sma">Simple SMA Crossover</option>
             <option value="watchlist_momentum">Watchlist Momentum Spike</option>
+            <option value="top_volume_momentum">Top Volume Momentum</option>
           </select>
         </div>
         <div class="field">
@@ -782,8 +914,101 @@ TRADING_HTML = """<!doctype html>
       </form>
 
       <section class="panel result-panel">
-        <div class="status" id="loop-status">Loop status unavailable</div>
-        <pre id="result">{}</pre>
+        <div class="status-bar">
+          <div class="status" id="loop-status">Loop status unavailable</div>
+          <div class="badge" id="loop-badge">Stopped</div>
+        </div>
+
+        <div class="summary-grid" aria-label="Latest result summary">
+          <div class="summary-card">
+            <div class="label">Mode</div>
+            <div class="value" id="summary-mode">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Signal</div>
+            <div class="value" id="summary-signal">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Order Status</div>
+            <div class="value" id="summary-order">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Market</div>
+            <div class="value" id="summary-market">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Last Price</div>
+            <div class="value" id="summary-price">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="label">Updated</div>
+            <div class="value" id="summary-updated">-</div>
+          </div>
+        </div>
+
+        <section>
+          <div class="section-title">Execution Detail</div>
+          <div id="detail-empty" class="empty">No test result has been recorded yet.</div>
+          <div class="table-wrap" id="detail-wrap" hidden>
+            <table>
+              <tbody id="detail-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="candidates-section" hidden>
+          <div class="section-title" id="candidates-title">Momentum Candidates</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>24h Value</th>
+                  <th>Recent %</th>
+                  <th>5 Candle %</th>
+                  <th>Volume x</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody id="candidates-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <details>
+          <summary>Raw JSON</summary>
+          <pre id="result">{}</pre>
+        </details>
+      </section>
+
+      <section class="panel history-panel">
+        <div class="history-header">
+          <div>
+            <div class="section-title">Previous Test Runs</div>
+            <div class="status" id="history-status">Loading previous runs</div>
+          </div>
+          <button id="refresh-history" type="button">Refresh</button>
+        </div>
+        <div id="history-empty" class="empty">No previous runs have been logged yet.</div>
+        <div class="table-wrap" id="history-wrap" hidden>
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Mode</th>
+                <th>Strategy</th>
+                <th>Market</th>
+                <th>Signal</th>
+                <th>Price</th>
+                <th>Reason</th>
+                <th>Order</th>
+                <th>Skipped</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+        </div>
       </section>
     </section>
   </main>
@@ -792,6 +1017,167 @@ TRADING_HTML = """<!doctype html>
     const form = document.getElementById("trade-form");
     const result = document.getElementById("result");
     const statusEl = document.getElementById("loop-status");
+    const badge = document.getElementById("loop-badge");
+    const refreshHistory = document.getElementById("refresh-history");
+    const fmtKrw = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
+
+    function text(id, value) {
+      document.getElementById(id).textContent = value ?? "-";
+    }
+
+    function signalClass(signal) {
+      if (signal === "buy") return "positive";
+      if (signal === "sell") return "negative";
+      if (signal === "hold") return "warning";
+      return "";
+    }
+
+    function formatKrw(value) {
+      if (value === null || value === undefined || value === "") return "-";
+      return fmtKrw.format(Number(value));
+    }
+
+    function orderStatus(data) {
+      if (!data) return "-";
+      if (data.skipped) return "Skipped";
+      if (data.order_result) return data.config?.mode === "paper" ? "Paper filled" : "Accepted";
+      if (data.order) return "Created";
+      return "No order";
+    }
+
+    function signalPrice(data) {
+      return data?.signal_price || data?.last_price || data?.decision?.selected_price || data?.decision?.candidates?.[0]?.last_price || "";
+    }
+
+    function signalReason(data) {
+      return data?.signal_reason || data?.decision?.reason || "";
+    }
+
+    function addDetail(label, value, className = "") {
+      const row = document.createElement("tr");
+      const labelCell = document.createElement("td");
+      const valueCell = document.createElement("td");
+      labelCell.textContent = label;
+      valueCell.textContent = value ?? "-";
+      if (className) valueCell.className = className;
+      row.append(labelCell, valueCell);
+      document.getElementById("detail-body").appendChild(row);
+    }
+
+    function showResult(data) {
+      show(data);
+      const hasResult = data && !data.error && data.updated_at;
+      text("summary-mode", data?.config?.mode || "-");
+      text("summary-market", data?.config?.market || data?.decision?.market || "-");
+      text("summary-price", formatKrw(signalPrice(data)));
+      text("summary-updated", data?.updated_at || "-");
+
+      const signal = data?.signal || "-";
+      const signalEl = document.getElementById("summary-signal");
+      signalEl.textContent = signal === "-" ? "-" : signal.toUpperCase();
+      signalEl.className = `value ${signalClass(signal)}`;
+      text("summary-order", data?.error ? "Error" : orderStatus(data));
+
+      const detailEmpty = document.getElementById("detail-empty");
+      const detailWrap = document.getElementById("detail-wrap");
+      const detailBody = document.getElementById("detail-body");
+      detailBody.replaceChildren();
+
+      if (hasResult) {
+        addDetail("Strategy", data.strategy);
+        addDetail("Signal Price", formatKrw(signalPrice(data)));
+        addDetail("Signal Reason", signalReason(data) || "-");
+        addDetail("Previous Signal", data.previous_signal || "-");
+        addDetail("Short SMA", formatKrw(data.short_sma));
+        addDetail("Long SMA", formatKrw(data.long_sma));
+        addDetail("Skipped", data.skipped ? "Yes" : "No", data.skipped ? "warning" : "");
+        addDetail("Skip Reason", data.skip_reason || "-");
+        addDetail("Decision Reason", data.decision?.reason || "-");
+        addDetail("Order", data.order ? JSON.stringify(data.order) : "-");
+        addDetail("Order Result", data.order_result ? JSON.stringify(data.order_result) : "-");
+        detailEmpty.hidden = true;
+        detailWrap.hidden = false;
+      } else {
+        detailEmpty.textContent = data?.error || "No test result has been recorded yet.";
+        detailEmpty.className = data?.error ? "empty negative" : "empty";
+        detailEmpty.hidden = false;
+        detailWrap.hidden = true;
+      }
+
+      const candidatesSection = document.getElementById("candidates-section");
+      document.getElementById("candidates-title").textContent =
+        data?.strategy === "top_volume_momentum" ? "Top Volume Momentum Candidates" : "Momentum Candidates";
+      const candidatesBody = document.getElementById("candidates-body");
+      candidatesBody.replaceChildren();
+      const candidates = data?.decision?.candidates || [];
+      for (const item of candidates) {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+          <td>${item.market}</td>
+          <td>${formatKrw(item.acc_trade_price_24h)}</td>
+          <td class="${signalClass(item.recent_change_pct >= 0 ? "buy" : "sell")}">${Number(item.recent_change_pct).toFixed(2)}%</td>
+          <td>${Number(item.five_candle_change_pct).toFixed(2)}%</td>
+          <td>${Number(item.volume_multiplier).toFixed(2)}x</td>
+          <td>${Number(item.score).toFixed(2)}</td>
+        `;
+        candidatesBody.appendChild(row);
+      }
+      candidatesSection.hidden = candidates.length === 0;
+    }
+
+    function renderHistory(items) {
+      const historyStatus = document.getElementById("history-status");
+      const historyEmpty = document.getElementById("history-empty");
+      const historyWrap = document.getElementById("history-wrap");
+      const historyBody = document.getElementById("history-body");
+      historyBody.replaceChildren();
+
+      if (!items.length) {
+        historyStatus.textContent = "No saved test runs";
+        historyEmpty.hidden = false;
+        historyWrap.hidden = true;
+        return;
+      }
+
+      for (const entry of items) {
+        const run = entry.result || {};
+        const row = document.createElement("tr");
+        const signal = run.signal || "-";
+        row.innerHTML = `
+          <td>${entry.logged_at || run.updated_at || "-"}</td>
+          <td>${run.config?.mode || "-"}</td>
+          <td>${run.strategy || "-"}</td>
+          <td>${run.config?.market || run.decision?.market || "-"}</td>
+          <td class="${signalClass(signal)}">${signal === "-" ? "-" : signal.toUpperCase()}</td>
+          <td>${formatKrw(signalPrice(run))}</td>
+          <td>${signalReason(run) || "-"}</td>
+          <td>${run.error ? "Error" : orderStatus(run)}</td>
+          <td>${run.skipped ? "Yes" : "No"}</td>
+          <td class="${run.error ? "negative" : ""}">${run.error || "-"}</td>
+        `;
+        row.addEventListener("click", () => showResult(run));
+        historyBody.appendChild(row);
+      }
+
+      historyStatus.textContent = `Loaded ${items.length} saved runs`;
+      historyEmpty.hidden = true;
+      historyWrap.hidden = false;
+    }
+
+    async function loadHistory() {
+      refreshHistory.disabled = true;
+      try {
+        const data = await api("/api/trading/logs?limit=50");
+        renderHistory(data.items || []);
+      } catch (err) {
+        document.getElementById("history-status").textContent = "Could not load previous runs";
+        document.getElementById("history-empty").hidden = false;
+        document.getElementById("history-empty").textContent = err.error || "Trading log request failed";
+        document.getElementById("history-wrap").hidden = true;
+      } finally {
+        refreshHistory.disabled = false;
+      }
+    }
 
     function payload() {
       return {
@@ -851,18 +1237,25 @@ TRADING_HTML = """<!doctype html>
 
     async function refreshState() {
       const state = await api("/api/trading/state");
-      statusEl.textContent = state.active
-        ? `Loop running every ${state.interval}s for ${state.config?.market || "-"} in ${state.config?.mode || "-"} mode`
-        : "Loop stopped";
-      if (state.last_result) show(state.last_result);
+      badge.textContent = state.error ? "Error" : state.active ? "Running" : "Stopped";
+      badge.className = `badge ${state.error ? "error" : state.active ? "active" : ""}`;
+      statusEl.textContent = state.error
+        ? `Last run failed: ${state.error}`
+        : state.active
+          ? `Loop running every ${state.interval}s for ${state.config?.market || "-"} in ${state.config?.mode || "-"} mode`
+          : state.stopped_at
+            ? `Loop stopped at ${state.stopped_at}`
+            : "Loop stopped";
+      if (state.last_result) showResult(state.last_result);
     }
 
     document.getElementById("run-once").addEventListener("click", async () => {
       try {
-        show(await api("/api/trading/run", payload()));
+        showResult(await api("/api/trading/run", payload()));
         await refreshState();
+        await loadHistory();
       } catch (err) {
-        show(err);
+        showResult(err);
       }
     });
 
@@ -871,7 +1264,7 @@ TRADING_HTML = """<!doctype html>
         show(await api("/api/trading/start", payload()));
         await refreshState();
       } catch (err) {
-        show(err);
+        showResult(err);
       }
     });
 
@@ -879,17 +1272,21 @@ TRADING_HTML = """<!doctype html>
       try {
         show(await api("/api/trading/stop", {}));
         await refreshState();
+        await loadHistory();
       } catch (err) {
-        show(err);
+        showResult(err);
       }
     });
+
+    refreshHistory.addEventListener("click", loadHistory);
 
     form.market.addEventListener("change", () => {
       form.live_confirm_market.value = "";
     });
 
-    loadOptions().then(refreshState).catch(show);
+    loadOptions().then(refreshState).then(loadHistory).catch(show);
     setInterval(refreshState, 5000);
+    setInterval(loadHistory, 30000);
   </script>
 </body>
 </html>
@@ -903,13 +1300,15 @@ def to_decimal(value: Any) -> Decimal:
         raise ValueError(f"Could not parse decimal value {value!r}") from exc
 
 
-def decimal_json(value: Decimal) -> int | float:
+def decimal_json(value: Decimal | int | float | str) -> int | float:
+    if not isinstance(value, Decimal):
+        value = to_decimal(value)
     if value == value.to_integral_value():
         return int(value)
     return float(value)
 
 
-def optional_decimal_json(value: Decimal | None) -> int | float | None:
+def optional_decimal_json(value: Decimal | int | float | str | None) -> int | float | None:
     if value is None:
         return None
     return decimal_json(value)
@@ -921,11 +1320,45 @@ def load_watchlist() -> list[str]:
     return markets or DEFAULT_WATCHLIST
 
 
+def fetch_tickers(client: UpbitClient, markets: list[str]) -> list[dict[str, Any]]:
+    tickers: list[dict[str, Any]] = []
+    for index in range(0, len(markets), 100):
+        batch = markets[index : index + 100]
+        if batch:
+            tickers.extend(client.public_get("/v1/ticker", {"markets": ",".join(batch)}))
+    return tickers
+
+
+def list_quote_markets(client: UpbitClient, quote: str = "KRW") -> list[str]:
+    prefix = f"{quote.upper()}-"
+    markets = client.public_get("/v1/market/all", {"is_details": "false"})
+    return sorted(str(item["market"]) for item in markets if str(item.get("market", "")).startswith(prefix))
+
+
+def top_volume_markets(client: UpbitClient, quote: str = "KRW", limit: int = TOP_VOLUME_LIMIT) -> list[dict[str, Any]]:
+    markets = list_quote_markets(client, quote)
+    tickers = fetch_tickers(client, markets)
+    ranked = sorted(
+        tickers,
+        key=lambda ticker: to_decimal(ticker.get("acc_trade_price_24h", "0")),
+        reverse=True,
+    )
+    return [
+        {
+            "market": str(ticker["market"]),
+            "trade_price": to_decimal(ticker["trade_price"]),
+            "acc_trade_price_24h": to_decimal(ticker.get("acc_trade_price_24h", "0")),
+            "signed_change_rate": to_decimal(ticker.get("signed_change_rate", "0")),
+        }
+        for ticker in ranked[:limit]
+    ]
+
+
 def build_watchlist() -> dict[str, Any]:
     config = load_config()
     client = UpbitClient(config)
     markets = load_watchlist()
-    tickers = client.public_get("/v1/ticker", {"markets": ",".join(markets)})
+    tickers = fetch_tickers(client, markets)
 
     by_market = {str(ticker["market"]): ticker for ticker in tickers}
     items = []
@@ -1007,7 +1440,7 @@ def build_status(market: str | None = None) -> dict[str, Any]:
     ticker = client.public_get("/v1/ticker", {"markets": config.market})[0]
     candles = client.get_candles()
     closes = [to_decimal(candle["trade_price"]) for candle in reversed(candles)]
-    signal, short_sma, long_sma = decide_signal(closes, config.short_sma, config.long_sma)
+    signal, short_sma, long_sma, reason = decide_signal(closes, config.short_sma, config.long_sma)
 
     accounts: dict[str, Any] = {"available": False, "items": [], "error": ""}
     if config.access_key and config.secret_key:
@@ -1038,6 +1471,8 @@ def build_status(market: str | None = None) -> dict[str, Any]:
         },
         "strategy": {
             "signal": signal,
+            "signal_price": decimal_json(closes[-1]),
+            "reason": reason,
             "short_sma": decimal_json(short_sma),
             "long_sma": decimal_json(long_sma),
             "last_candle_at": str(candles[0].get("candle_date_time_kst", "")),
@@ -1069,6 +1504,7 @@ def trading_options() -> dict[str, Any]:
         "strategies": [
             {"id": "simple_sma", "name": "Simple SMA Crossover"},
             {"id": "watchlist_momentum", "name": "Watchlist Momentum Spike"},
+            {"id": "top_volume_momentum", "name": "Top Volume Momentum"},
         ],
         "modes": ["paper", "test", "live"],
         "config": {
@@ -1088,7 +1524,7 @@ def trading_options() -> dict[str, Any]:
 def trading_config_from_payload(payload: dict[str, Any]) -> Any:
     base = load_config()
     strategy = str(payload.get("strategy", "simple_sma"))
-    if strategy not in {"simple_sma", "watchlist_momentum"}:
+    if strategy not in SUPPORTED_TRADING_STRATEGIES:
         raise ValueError(f"Unsupported strategy: {strategy}")
 
     market = str(payload.get("market") or base.market).strip().upper()
@@ -1121,7 +1557,7 @@ def trading_config_from_payload(payload: dict[str, Any]) -> Any:
 
 def trading_strategy_from_payload(payload: dict[str, Any]) -> str:
     strategy = str(payload.get("strategy", "simple_sma"))
-    if strategy not in {"simple_sma", "watchlist_momentum"}:
+    if strategy not in SUPPORTED_TRADING_STRATEGIES:
         raise ValueError(f"Unsupported strategy: {strategy}")
     return strategy
 
@@ -1151,13 +1587,17 @@ def config_summary(config: Any) -> dict[str, Any]:
     }
 
 
-def decide_watchlist_momentum(
+def decide_momentum_from_markets(
     client: UpbitClient,
     config: Any,
     settings: dict[str, Decimal],
+    markets: list[str],
+    source_metrics: dict[str, dict[str, Any]] | None = None,
+    universe_label: str = "watchlist",
 ) -> dict[str, Any]:
     candidates = []
-    for market in load_watchlist():
+    source_metrics = source_metrics or {}
+    for market in markets:
         market_config = config.__class__(**{**config.__dict__, "market": market})
         candles = client.public_get(
             f"/v1/candles/minutes/{market_config.candle_unit}",
@@ -1186,13 +1626,14 @@ def decide_watchlist_momentum(
                 "baseline_volume": baseline_volume,
                 "volume_multiplier": volume_multiplier,
                 "score": score,
+                "acc_trade_price_24h": source_metrics.get(market, {}).get("acc_trade_price_24h"),
             }
         )
 
     candidates.sort(key=lambda item: item["score"], reverse=True)
     top = candidates[0] if candidates else None
     signal = "hold"
-    reason = "No watchlist candle data was available."
+    reason = f"No {universe_label} candle data was available."
     selected_market = config.market
     if top:
         selected_market = str(top["market"])
@@ -1200,16 +1641,17 @@ def decide_watchlist_momentum(
         volume_hit = top["volume_multiplier"] >= settings["volume_multiplier"]
         if surge_hit and volume_hit:
             signal = "buy"
-            reason = "Top watchlist coin met both price surge and volume spike thresholds."
+            reason = f"Leading {universe_label} met both price surge and volume spike thresholds."
         elif top["recent_change_pct"] < Decimal("0"):
             signal = "sell"
-            reason = "Top watchlist momentum turned negative."
+            reason = f"Leading {universe_label} momentum turned negative."
         else:
-            reason = "No coin met both aggressive buy thresholds."
+            reason = f"No {universe_label} met both aggressive buy thresholds."
 
     return {
         "signal": signal,
         "market": selected_market,
+        "selected_price": decimal_json(top["last_price"]) if top else None,
         "reason": reason,
         "settings": {key: decimal_json(value) for key, value in settings.items()},
         "candidates": [
@@ -1221,6 +1663,7 @@ def decide_watchlist_momentum(
                 "current_volume": decimal_json(item["current_volume"]),
                 "baseline_volume": decimal_json(item["baseline_volume"]),
                 "volume_multiplier": float(item["volume_multiplier"]),
+                "acc_trade_price_24h": optional_decimal_json(item.get("acc_trade_price_24h")),
                 "score": float(item["score"]),
             }
             for item in candidates[:10]
@@ -1228,12 +1671,49 @@ def decide_watchlist_momentum(
     }
 
 
+def decide_watchlist_momentum(
+    client: UpbitClient,
+    config: Any,
+    settings: dict[str, Decimal],
+) -> dict[str, Any]:
+    return decide_momentum_from_markets(client, config, settings, load_watchlist(), universe_label="watchlist market")
+
+
+def decide_top_volume_momentum(
+    client: UpbitClient,
+    config: Any,
+    settings: dict[str, Decimal],
+) -> dict[str, Any]:
+    top_markets = top_volume_markets(client, "KRW", TOP_VOLUME_LIMIT)
+    markets = [item["market"] for item in top_markets]
+    source_metrics = {item["market"]: item for item in top_markets}
+    decision = decide_momentum_from_markets(
+        client,
+        config,
+        settings,
+        markets,
+        source_metrics,
+        "top-volume market",
+    )
+    decision["top_volume_markets"] = [
+        {
+            "rank": index + 1,
+            "market": item["market"],
+            "trade_price": decimal_json(item["trade_price"]),
+            "acc_trade_price_24h": decimal_json(item["acc_trade_price_24h"]),
+            "signed_change_rate": float(item["signed_change_rate"]),
+        }
+        for index, item in enumerate(top_markets)
+    ]
+    return decision
+
+
 def run_trading_cycle(config: Any) -> dict[str, Any]:
     client = UpbitClient(config)
     candles = client.get_candles()
     closes = [to_decimal(candle["trade_price"]) for candle in reversed(candles)]
     last_price = closes[-1]
-    signal, short_sma, long_sma = decide_signal(closes, config.short_sma, config.long_sma)
+    signal, short_sma, long_sma, reason = decide_signal(closes, config.short_sma, config.long_sma)
 
     now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z")
     signal_key = f"{config.mode}:{config.market}"
@@ -1246,6 +1726,8 @@ def run_trading_cycle(config: Any) -> dict[str, Any]:
         "config": config_summary(config),
         "strategy": "simple_sma",
         "last_price": decimal_json(last_price),
+        "signal_price": decimal_json(last_price),
+        "signal_reason": reason,
         "short_sma": decimal_json(short_sma),
         "long_sma": decimal_json(long_sma),
         "signal": signal,
@@ -1297,6 +1779,8 @@ def run_watchlist_momentum_cycle(config: Any, settings: dict[str, Decimal]) -> d
         "config": config_summary(selected_config),
         "strategy": "watchlist_momentum",
         "signal": signal,
+        "signal_price": decision.get("selected_price"),
+        "signal_reason": decision.get("reason"),
         "previous_signal": previous_signal,
         "decision": decision,
         "skipped": False,
@@ -1329,24 +1813,148 @@ def run_watchlist_momentum_cycle(config: Any, settings: dict[str, Decimal]) -> d
     return result
 
 
+def run_top_volume_momentum_cycle(config: Any, settings: dict[str, Decimal]) -> dict[str, Any]:
+    client = UpbitClient(config)
+    decision = decide_top_volume_momentum(client, config, settings)
+    selected_config = config.__class__(**{**config.__dict__, "market": decision["market"]})
+    signal = str(decision["signal"])
+    now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z")
+    signal_key = f"{selected_config.mode}:top_volume_momentum:{selected_config.market}"
+
+    state = load_state(selected_config.state_file)
+    signals = state.setdefault("signals", {})
+    previous_signal = signals.get(signal_key)
+    result: dict[str, Any] = {
+        "updated_at": now,
+        "config": config_summary(selected_config),
+        "strategy": "top_volume_momentum",
+        "signal": signal,
+        "signal_price": decision.get("selected_price"),
+        "signal_reason": decision.get("reason"),
+        "previous_signal": previous_signal,
+        "decision": decision,
+        "skipped": False,
+        "skip_reason": "",
+        "order": None,
+        "order_result": None,
+    }
+
+    if signal == previous_signal:
+        result["skipped"] = True
+        result["skip_reason"] = "Signal has not changed since the previous cycle for the selected top-volume market."
+        return result
+
+    accounts = client.get_accounts() if selected_config.mode in {"test", "live"} else None
+    order = make_order(selected_config, signal, accounts)
+    result["order"] = order
+
+    signals[signal_key] = signal
+    state["updated_at"] = now
+
+    if order is None:
+        result["skipped"] = True
+        result["skip_reason"] = "No order was created for this signal."
+        save_state(selected_config.state_file, state)
+        return result
+
+    result["order_result"] = client.place_order(order)
+    state.setdefault("last_orders", {})[signal_key] = order
+    save_state(selected_config.state_file, state)
+    return result
+
+
 def trading_state_payload() -> dict[str, Any]:
     with TRADING_LOCK:
         return dict(TRADING_STATE)
 
 
+def trading_log_path() -> Path:
+    configured = os.environ.get("TRADING_LOG_FILE", "").strip()
+    return Path(configured) if configured else DEFAULT_TRADING_LOG_FILE
+
+
+def append_trading_log(result: dict[str, Any], source: str) -> None:
+    entry = {
+        "logged_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "source": source,
+        "result": result,
+    }
+    path = trading_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(entry, ensure_ascii=False, sort_keys=True))
+        file.write("\n")
+
+
+def safe_append_trading_log(result: dict[str, Any], source: str) -> None:
+    try:
+        append_trading_log(result, source)
+    except Exception as exc:
+        print(f"Could not write trading log: {exc}", file=sys.stderr)
+
+
+def read_trading_logs(limit: int = 50) -> dict[str, Any]:
+    limit = max(1, min(limit, 500))
+    path = trading_log_path()
+    if not path.exists():
+        return {
+            "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "path": str(path),
+            "items": [],
+        }
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    items: list[dict[str, Any]] = []
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict):
+            items.append(entry)
+        if len(items) >= limit:
+            break
+
+    return {
+        "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "path": str(path),
+        "items": items,
+    }
+
+
 def trading_worker(config: Any, interval: int) -> None:
     strategy = str(TRADING_STATE.get("strategy", "simple_sma"))
-    settings = dict(TRADING_STATE.get("settings") or {})
+    settings = {
+        key: to_decimal(value)
+        for key, value in dict(TRADING_STATE.get("settings") or {}).items()
+    }
     while not TRADING_STOP.is_set():
         try:
             if strategy == "watchlist_momentum":
                 result = run_watchlist_momentum_cycle(config, settings)
+            elif strategy == "top_volume_momentum":
+                result = run_top_volume_momentum_cycle(config, settings)
             else:
                 result = run_trading_cycle(config)
         except Exception as exc:
+            result = {
+                "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z"),
+                "config": config_summary(config),
+                "strategy": strategy,
+                "signal": "",
+                "skipped": False,
+                "order": None,
+                "order_result": None,
+                "error": str(exc),
+            }
+            safe_append_trading_log(result, "loop")
             with TRADING_LOCK:
                 TRADING_STATE["error"] = str(exc)
+                TRADING_STATE["last_result"] = result
         else:
+            safe_append_trading_log(result, "loop")
             with TRADING_LOCK:
                 TRADING_STATE["last_result"] = result
                 TRADING_STATE["error"] = ""
@@ -1447,10 +2055,23 @@ class CoinStatusHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/trading/state":
             self._send_json(trading_state_payload())
             return
+        if parsed.path == "/api/trading/logs":
+            params = parse_qs(parsed.query)
+            try:
+                limit = int(params.get("limit", ["50"])[0])
+                payload = read_trading_logs(limit)
+            except (ValueError, RuntimeError, urllib.error.URLError) as exc:
+                self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            except Exception as exc:
+                self._send_json({"error": f"Unexpected server error: {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            else:
+                self._send_json(payload)
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        payload: dict[str, Any] = {}
         try:
             payload = self._read_json()
             if parsed.path == "/api/trading/run":
@@ -1458,8 +2079,11 @@ class CoinStatusHandler(BaseHTTPRequestHandler):
                 strategy = trading_strategy_from_payload(payload)
                 if strategy == "watchlist_momentum":
                     result = run_watchlist_momentum_cycle(config, momentum_settings_from_payload(payload))
+                elif strategy == "top_volume_momentum":
+                    result = run_top_volume_momentum_cycle(config, momentum_settings_from_payload(payload))
                 else:
                     result = run_trading_cycle(config)
+                safe_append_trading_log(result, "run_once")
                 with TRADING_LOCK:
                     TRADING_STATE["last_result"] = result
                     TRADING_STATE["error"] = ""
@@ -1472,6 +2096,23 @@ class CoinStatusHandler(BaseHTTPRequestHandler):
                 self._send_json(stop_trading_loop())
                 return
         except (ValueError, RuntimeError, urllib.error.URLError) as exc:
+            if parsed.path == "/api/trading/run":
+                safe_append_trading_log(
+                    {
+                        "updated_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z"),
+                        "config": {
+                            "market": str(payload.get("market", "")),
+                            "mode": str(payload.get("mode", "")),
+                        },
+                        "strategy": str(payload.get("strategy", "")),
+                        "signal": "",
+                        "skipped": False,
+                        "order": None,
+                        "order_result": None,
+                        "error": str(exc),
+                    },
+                    "run_once",
+                )
             self._send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
         except Exception as exc:

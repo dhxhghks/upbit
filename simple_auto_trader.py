@@ -234,14 +234,14 @@ def moving_average(values: list[Decimal], length: int) -> Decimal:
     return sum(window) / Decimal(length)
 
 
-def decide_signal(closes: list[Decimal], short_length: int, long_length: int) -> tuple[str, Decimal, Decimal]:
+def decide_signal(closes: list[Decimal], short_length: int, long_length: int) -> tuple[str, Decimal, Decimal, str]:
     short = moving_average(closes, short_length)
     long = moving_average(closes, long_length)
     if short > long:
-        return "buy", short, long
+        return "buy", short, long, "Short SMA is above Long SMA."
     if short < long:
-        return "sell", short, long
-    return "hold", short, long
+        return "sell", short, long, "Short SMA is below Long SMA."
+    return "hold", short, long, "Short SMA equals Long SMA."
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -334,11 +334,11 @@ def run_once(config: Config) -> None:
     candles = client.get_candles()
     closes = [Decimal(str(candle["trade_price"])) for candle in reversed(candles)]
     last_price = closes[-1]
-    signal, short, long = decide_signal(closes, config.short_sma, config.long_sma)
+    signal, short, long, reason = decide_signal(closes, config.short_sma, config.long_sma)
 
     now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S %Z")
     print(f"[{now}] {config.market} last={last_price:,.0f} short_sma={short:,.2f} long_sma={long:,.2f}")
-    print(f"Signal: {signal.upper()} mode={config.mode}")
+    print(f"Signal: {signal.upper()} price={last_price:,.0f} KRW reason={reason} mode={config.mode}")
 
     state = load_state(config.state_file)
     signal_key = f"{config.mode}:{config.market}"
